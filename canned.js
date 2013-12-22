@@ -1,9 +1,12 @@
 "use strict";
 
+var Promise = require('bluebird');
 var url = require('url')
 var fs = require('fs')
 var util = require('util')
 var Response = require('./lib/response')
+
+Promise.promisifyAll(fs);
 
 function Canned(dir, options) {
   this.logger = options.logger
@@ -139,6 +142,9 @@ Canned.prototype._logHTTPObject = function (httpObj) {
   this._log(' served via: .' + httpObj.pathname.join('/') + '/' + httpObj.filename + '\n')
 }
 
+
+var _responseForFile = Promise.promisify(Canned._responseForFile);
+
 Canned.prototype.responder = function (req, res) {
   var that = this
   var parsedurl = url.parse(req.url)
@@ -160,46 +166,53 @@ Canned.prototype.responder = function (req, res) {
     return response.send()
   }
 
-  fs.readdir(httpObj.path, function (err, files) {
-    fs.stat(httpObj.path + '/' + httpObj.dname, function (err, stats) {
-      if (err) {
-        that._responseForFile(httpObj, files, function (err, resp) {
-          if (err) {
-            httpObj.fname = 'any'
-            that._responseForFile(httpObj, files, function (err, resp) {
-              if (err) {
-                that._log(' not found\n')
-              } else {
-                that._logHTTPObject(httpObj)
-              }
-              resp.send()
-            })
-          } else {
-            that._logHTTPObject(httpObj)
-            resp.send()
-          }
-        })
-      } else {
-        if (stats.isDirectory()) {
-          var fpath = httpObj.path + '/' + httpObj.dname
-          fs.readdir(fpath, function (err, files) {
-            httpObj.fname = 'index'
-            httpObj.path  = fpath
-            that._responseForFile(httpObj, files, function (err, resp) {
-              if (err) {
-                that._log(' not found\n')
-              } else {
-                that._logHTTPObject(httpObj)
-              }
-              resp.send()
-            })
-          })
-        } else {
-          new Response('html', '', 500, httpObj.res).send()
-        }
-      }
-    })
-  })
+  var currentFiles;
+  fs.readdirAsync(httpObj.path).then(function(files) {
+     currentFiles = files;
+     var pathname = httpObj.path + '/' + httpObj.dname;
+     fs.statAsync(pathname)
+       .then(function(stats) {
+         if (stats.isDirectory()) {
+           var fpath = httpObj.path + '/' + httpObj.dname
+           fs.readdirAsync(fpath)
+             .then(function (files) {
+               httpObj.fname = 'index'
+               httpObj.path  = fpath
+               _responseForFile(httpObj, files)
+                 .then(function (resp) {
+                   that._logHTTPObject(httpObj)
+                   resp.send()
+                 }).catch(function(err) {
+                   that._log(' not found\n')
+                   console.log(err);
+                 });
+               })
+              .catch(function(err) {
+                cosnole.log(err);
+              })
+         } else {
+           new Response('html', '', 500, httpObj.res).send()
+         }
+       })
+       .catch(function(err) {
+         console.log(err);
+         httpObj.fname = 'any'
+         _responseForFile(httpObj, currentFiles)
+           .then(function (resp) {
+             that._logHTTPObject(httpObj);
+             resp.send();
+           })
+           .catch(function (err) {
+             that._log(' not found\n')
+           })
+         })
+   })
+   .catch(function(err) {
+     console.log(err)
+   })
+
+
+
 }
 
 var canned = function (dir, options) {
